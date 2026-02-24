@@ -1,4 +1,4 @@
-name: Zaino Release
+name: Release
 
 on:
   push:
@@ -8,8 +8,27 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Check if Docker secrets are configured
+  check-docker-config:
+    name: Check Docker configuration
+    runs-on: ubuntu-latest
+    outputs:
+      docker_configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Check for Docker secrets
+        id: check
+        run: |
+          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_ACCESS_TOKEN }}" ]; then
+            echo "configured=true" >> $GITHUB_OUTPUT
+          else
+            echo "configured=false" >> $GITHUB_OUTPUT
+            echo "::notice::Docker secrets not configured - skipping Docker builds"
+          fi
+
   docker:
     name: Docker images (build+push)
+    needs: check-docker-config
+    if: needs.check-docker-config.outputs.docker_configured == 'true'
     runs-on: ubuntu-latest
     env:
       PUSH_IMAGES: true
@@ -75,7 +94,9 @@ jobs:
             type=gha,mode=max
 
   create-release:
-    needs: docker
+    needs: [check-docker-config, docker]
+    # Run even if docker was skipped (but not if it failed)
+    if: always() && (needs.docker.result == 'success' || needs.docker.result == 'skipped')
     name: Create GitHub Release
     runs-on: ubuntu-latest
     steps:
