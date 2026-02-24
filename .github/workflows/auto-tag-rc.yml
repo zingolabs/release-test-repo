@@ -136,6 +136,25 @@ jobs:
               return;
             }
 
+            // Ensure labels exist
+            const labels = [
+              { name: 'sync', color: '0366d6', description: 'Sync PR from RC back to dev' },
+              { name: 'automated', color: '6c757d', description: 'PR created by CI automation' }
+            ];
+            for (const label of labels) {
+              try {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: label.name,
+                  color: label.color,
+                  description: label.description
+                });
+              } catch (e) {
+                if (e.status !== 422) throw e;
+              }
+            }
+
             // Create new sync PR
             const pr = await github.rest.pulls.create({
               owner: context.repo.owner,
@@ -157,6 +176,14 @@ jobs:
             *This PR was automatically created by the sync-rc-to-dev workflow.*`,
               head: rcBranch,
               base: 'dev'
+            });
+
+            // Add labels
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.data.number,
+              labels: ['sync', 'automated']
             });
 
             console.log(`Created PR #${pr.data.number}: ${pr.data.html_url}`);
