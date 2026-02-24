@@ -6,3 +6,4 @@ critical fix 1
 critical fix 2
 critical fix 3
 new feature for 0.3.0
+Feature A: user authentication
