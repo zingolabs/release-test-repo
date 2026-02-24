@@ -9,3 +9,4 @@ new feature for 0.3.0
 Feature A: user authentication
 Feature B: payment processing
 Feature C: notifications
+Fix: authentication token expiry issue
