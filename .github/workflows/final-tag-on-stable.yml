@@ -13,6 +13,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,4 +44,104 @@ jobs:
           git config user.email github-actions@users.noreply.github.com
           git tag ${{ steps.get-version.outputs.version }}
           git push origin ${{ steps.get-version.outputs.version }}
+
+  create-release:
+    needs: tag-stable
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate Changelog
+        run: |
+          VERSION="${{ needs.tag-stable.outputs.version }}"
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREVIOUS_TAG" ]; then
+            git log --pretty=format:"* %s" > CHANGELOG.md
+          else
+            git log --pretty=format:"* %s" $PREVIOUS_TAG..HEAD > CHANGELOG.md
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.tag-stable.outputs.version }}
+          files: CHANGELOG.md
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Docker builds - only if secrets are configured
+  check-docker-config:
+    needs: tag-stable
+    runs-on: ubuntu-latest
+    outputs:
+      docker_configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Check for Docker secrets
+        id: check
+        run: |
+          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_ACCESS_TOKEN }}" ]; then
+            echo "configured=true" >> $GITHUB_OUTPUT
+          else
+            echo "configured=false" >> $GITHUB_OUTPUT
+            echo "::notice::Docker secrets not configured - skipping Docker builds"
+          fi
+
+  docker:
+    needs: [tag-stable, check-docker-config]
+    if: needs.check-docker-config.outputs.docker_configured == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
+
+      - name: Extract metadata for Docker (default image)
+        id: meta-default
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_RELEASE_REPO || 'zaino' }}
+          tags: |
+            type=raw,value=${{ needs.tag-stable.outputs.version }}
+
+      - name: Build and Push Default Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta-default.outputs.tags }}
+          labels: ${{ steps.meta-default.outputs.labels }}
+
+      - name: Extract metadata for Docker (no-tls image)
+        id: meta-no-tls
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_RELEASE_REPO || 'zaino' }}
+          flavor: |
+            suffix=-no-tls
+          tags: |
+            type=raw,value=${{ needs.tag-stable.outputs.version }}
+
+      - name: Build and Push No-TLS Image
+        uses: docker/build-push-action@v5
+        with:
+          build-args: NO_TLS=true
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta-no-tls.outputs.tags }}
+          labels: ${{ steps.meta-no-tls.outputs.labels }}
 

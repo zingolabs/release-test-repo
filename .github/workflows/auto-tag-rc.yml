@@ -45,6 +45,36 @@ jobs:
           git tag ${{ steps.tagger.outputs.TAG }}
           git push origin ${{ steps.tagger.outputs.TAG }}
 
+  create-prerelease:
+    needs: auto-tag-rc
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate Changelog
+        run: |
+          TAG="${{ needs.auto-tag-rc.outputs.tag }}"
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREVIOUS_TAG" ]; then
+            git log --pretty=format:"* %s" > CHANGELOG.md
+          else
+            git log --pretty=format:"* %s" $PREVIOUS_TAG..HEAD > CHANGELOG.md
+          fi
+
+      - name: Create GitHub Pre-release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.auto-tag-rc.outputs.tag }}
+          files: CHANGELOG.md
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   sync-rc-to-dev:
     needs: auto-tag-rc
     runs-on: ubuntu-latest
@@ -73,7 +103,7 @@ jobs:
             echo "needs_sync=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create sync PR
+      - name: Create or update sync PR
         if: steps.check-sync.outputs.needs_sync == 'true'
         uses: actions/github-script@v7
         with:
@@ -81,7 +111,7 @@ jobs:
             const rcBranch = '${{ needs.auto-tag-rc.outputs.rc_branch }}';
             const tag = '${{ needs.auto-tag-rc.outputs.tag }}';
 
-            // Find and close any existing sync PRs for this RC branch (superseded by the new one)
+            // Check if a sync PR already exists for this RC branch
             const existingPRs = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -90,25 +120,23 @@ jobs:
               base: 'dev'
             });
 
-            for (const oldPR of existingPRs.data) {
-              console.log(`Closing superseded sync PR #${oldPR.number}`);
+            if (existingPRs.data.length > 0) {
+              const existingPR = existingPRs.data[0];
+              console.log(`Sync PR already exists: #${existingPR.number} - ${existingPR.html_url}`);
 
+              // Add a comment noting the new RC tag
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: oldPR.number,
-                body: `Closing this PR as it has been superseded by a newer RC tag: \`${tag}\`.\n\nA new sync PR will be created with all the latest changes.`
+                issue_number: existingPR.number,
+                body: `🏷️ New RC tag created: \`${tag}\`\n\nThis PR now includes changes up to this release candidate.`
               });
 
-              await github.rest.pulls.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: oldPR.number,
-                state: 'closed'
-              });
+              console.log(`Added comment to PR #${existingPR.number} for tag ${tag}`);
+              return;
             }
 
-            // Create the new PR
+            // Create new sync PR
             const pr = await github.rest.pulls.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -117,12 +145,13 @@ jobs:
 
             This PR syncs changes from \`${rcBranch}\` back to \`dev\` to prevent branch deviation.
 
-            **Triggered by:** ${tag}
+            **Initially triggered by:** ${tag}
 
             ### Review Notes
+            - This PR automatically stays up-to-date as new commits land on \`${rcBranch}\`
             - Please review any hotfix changes that were applied directly to the RC branch
             - Resolve any merge conflicts that may arise
-            - This helps ensure dev stays up-to-date with release fixes
+            - Merge this after the RC is finalized or periodically to keep dev in sync
 
             ---
             *This PR was automatically created by the sync-rc-to-dev workflow.*`,
