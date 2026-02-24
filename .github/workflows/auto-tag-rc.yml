@@ -45,6 +45,36 @@ jobs:
           git tag ${{ steps.tagger.outputs.TAG }}
           git push origin ${{ steps.tagger.outputs.TAG }}
 
+  create-prerelease:
+    needs: auto-tag-rc
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate Changelog
+        run: |
+          TAG="${{ needs.auto-tag-rc.outputs.tag }}"
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREVIOUS_TAG" ]; then
+            git log --pretty=format:"* %s" > CHANGELOG.md
+          else
+            git log --pretty=format:"* %s" $PREVIOUS_TAG..HEAD > CHANGELOG.md
+          fi
+
+      - name: Create GitHub Pre-release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.auto-tag-rc.outputs.tag }}
+          files: CHANGELOG.md
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   sync-rc-to-dev:
     needs: auto-tag-rc
     runs-on: ubuntu-latest
